@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.774.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "eslint": "^9.23.0",
+    "globals": "^16.0.0",
+    "webpack": "^5.98.0",
+    "webpack-cli": "^6.0.1"
+  },
+  "scripts": {
+    "build": "npx webpack",
+    "watch": "npx webpack --watch",
+    "lint": "eslint . --ext .js"
+  }
+}
