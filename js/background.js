@@ -1,7 +1,7 @@
 // This is the main background worker script
 
 // IMPORTS
-import { S3Client, ListBucketsCommand, ListObjectVersionsCommand, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, ListBucketsCommand, ListObjectVersionsCommand, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import * as CRYPTO from "./crypto.js";
 
 const USING_CRYPTO = true;
@@ -14,10 +14,13 @@ let AWS_BUCKETNAME;
 
 let s3Client;
 
+
 // Get AWS credentials from storage
-async function getAwsCredentials () {
+async function getAWSCredentials () {
   const keys = ["AES_Password", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_BUCKETNAME"];
-  chrome.storage.sync.get(keys, (data) => {
+
+/*
+  return chrome.storage.sync.get(keys, (data) => {
     console.log ("loaded credentials are",data);
     AES_Password          = data.AES_Password;
     AWS_ACCESS_KEY_ID     = data.AWS_ACCESS_KEY_ID;
@@ -26,58 +29,83 @@ async function getAwsCredentials () {
     AWS_BUCKETNAME        = data.AWS_BUCKETNAME;
     s3Client = new S3Client({ region: AWS_DEFAULT_REGION,  credentials: { accessKeyId: AWS_ACCESS_KEY_ID, secretAccessKey: AWS_SECRET_ACCESS_KEY } });
   });
+*/
+
+  let data = await chrome.storage.sync.get(keys);
+    console.log ("loaded credentials are",data);
+    AES_Password          = data.AES_Password;
+    AWS_ACCESS_KEY_ID     = data.AWS_ACCESS_KEY_ID;
+    AWS_SECRET_ACCESS_KEY = data.AWS_SECRET_ACCESS_KEY;
+    AWS_DEFAULT_REGION    = data.AWS_DEFAULT_REGION;
+    AWS_BUCKETNAME        = data.AWS_BUCKETNAME;
+    s3Client = new S3Client({ region: AWS_DEFAULT_REGION,  credentials: { accessKeyId: AWS_ACCESS_KEY_ID, secretAccessKey: AWS_SECRET_ACCESS_KEY } });
+  console.warn ("CLIENT IS ", s3Client);
+  return Promise.resolve ( );
+
 }
 
-await getAwsCredentials ();
+
+
 
 // Listen for all kinds of bookmark changes
 chrome.bookmarks.onCreated.addListener ( function(id, bookmark) {
   M.markDirty();
-  //console.log(`Bookmark created: id=${id}, bookmark.id=${bookmark.id} title=${bookmark.title}  url=${bookmark.url}`, bookmark);
+  console.log(`Bookmark created: id=${id}, bookmark.id=${bookmark.id} title=${bookmark.title}  url=${bookmark.url}`, bookmark);
 });
 
 chrome.bookmarks.onRemoved.addListener ( function(id, parentId, index) {
   M.markDirty();
-  //console.log('Bookmark removed: id=', id, "parentid=", parentId, "index=", index);
+  console.log('Bookmark removed: id=', id, "parentid=", parentId, "index=", index);
 });
 
 chrome.bookmarks.onChanged.addListener (function(id, changeInfo) {
   M.markDirty();
-  //console.log('Bookmark changed:', id, changeInfo);
+  console.log('Bookmark changed:', id, changeInfo);
 });
 
 chrome.bookmarks.onMoved.addListener (function(id, oldParentId, oldIndex, newParentId, newIndex) {
   M.markDirty();
-  //console.log('Bookmark moved:', id, oldParentId, oldIndex, newParentId, newIndex);
+  console.log('Bookmark moved:', id, oldParentId, oldIndex, newParentId, newIndex);
 });
 
 
 chrome.bookmarks.onImportEnded.addListener ( function() {
   M.markDirty();
-  //console.log('Bookmark import completed');
+  console.log('Bookmark import completed');
 });
 
 
 chrome.bookmarks.onChildrenReordered.addListener ( function() {
   M.markDirty();
-  //console.log('Bookmark children have been reordered');
+  console.log('Bookmark children have been reordered');
 });
 
 
-
-chrome.runtime.onMessage.addListener( async (message, sender, sendResponse) => {
-  // console.log ("got message ", message);
-  await getAwsCredentials ();
+// CAVE: this is a bit tricky. it NEEDS the return true and the non-await type of promise.then
+// if not, we get weird errors
+chrome.runtime.onMessage.addListener( (message, sender, sendResponse) => {
+   console.log ("got message ", message, sender);
   switch ( message.action) {
-    case "down":            downloadBookmarksFromS3();  break;
-    case "up":              uploadBookmarksToS3();      break;
-    case "list":            listBookmarksFromS3();      break;
+    case "down":            downloadBookmarksFromS3(message.src);  break;
+    case "up":              uploadBookmarksToS3(message.src);      break;
+    case "list":            listBookmarksFromS3().then ( listing => { console.log ("sending response", listing );sendResponse ( {answer: listing} ); });  return true;   break;
+
+    case "del":              deleteAllVersions().then ( response => sendResponse ( {response} ) ); return true; break;  // catch !!
     case "clearBookmarks":  clearBookmarks ();          break;
     case "clearCookies":    clearCookies ();            break;
   }
 });
 
  
+
+
+chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+  console.log ("clicked notification ", notificationId, buttonIndex);
+  if (notificationId === "lameNotification") {
+    if (buttonIndex === 0) { return; }  // dismiss
+    if (buttonIndex === 1) { uploadBookmarksToS3();}
+  }
+});
 
 
 let M = (() => {  // functionality for marking synchronoizer clean or dirty
@@ -98,15 +126,6 @@ let M = (() => {  // functionality for marking synchronoizer clean or dirty
         buttons: [ { title: "Dismiss" },  { title: "Upload" } ]
  }
     );
-
-  chrome.notifications.onClicked.addListener((notificationId, buttonIndex) => {
-    if (notificationId === "custom_action") {
-      if (buttonIndex === 0) { return; }  // dismiss
-      if (buttonindex === 1) { uploadBookmarksToS3();}
-  }
-});
-
-
   };
 
   const markClean = () => {
@@ -126,17 +145,17 @@ let M = (() => {  // functionality for marking synchronoizer clean or dirty
 
 
 
-async function clearBookmarks () {  console.log ("clearing bookmarks");
+async function clearBookmarks () {                        // console.log ("clearing bookmarks");
   M.disable();
-  let bookmarkTree = await chrome.bookmarks.getTree();
-  //console.log ("got bookmarks tree ", bookmarkTree);
-  const rootFolder = bookmarkTree[0];  // Get the root folder
-  //console.log ("root folder is", rootFolder);
+  let bookmarkTree = await chrome.bookmarks.getTree();    // console.log ("got bookmarks tree ", bookmarkTree);
+  const rootFolder = bookmarkTree[0];                     // console.log ("root folder is", rootFolder);
   try {
     if (rootFolder.children) { await deleteBookmarksTree(rootFolder.children); }
   } catch (x) { console.error (x);}
-  M.enable();
+  M.enable(); M.markClean();
 }
+
+
 
 function deleteBookmarksTree (bookmarkNodes) {
   return new Promise((resolve, reject) => {
@@ -150,7 +169,7 @@ function deleteBookmarksTree (bookmarkNodes) {
   });
 }
 
-function deleteBookmark(bookmarkId) {
+function deleteBookmark (bookmarkId) {
   return new Promise((resolve, reject) => {
     chrome.bookmarks.remove(bookmarkId, () => {
       if (chrome.runtime.lastError) {reject(chrome.runtime.lastError);} else {resolve();}
@@ -165,7 +184,8 @@ function deleteBookmark(bookmarkId) {
 
 
 
-async function uploadBookmarksToS3() {
+async function uploadBookmarksToS3 (keyName) {
+  await getAWSCredentials ();
   try {
     let bookmarks = await chrome.bookmarks.getTree ();
     let bText     = JSON.stringify (bookmarks);
@@ -177,14 +197,16 @@ async function uploadBookmarksToS3() {
       console.log ("encrypted upload ", uploadText);
     }
     else { uploadText = bText; }
-    uploadStringToS3 (uploadText, "bookmarks-file");
-  } catch (error) { console.error("Error syncing bookmarks:", error); }
+    uploadStringToS3 (uploadText, keyName);
+  } catch (error) { console.error("Error uploading bookmarks to ", keyName); console.error (error); }
   M.markClean();
 }
 
-async function downloadBookmarksFromS3 () {
-  M.disable ();
-  let downloadText = await downloadFromS3 ( "bookmarks-file" );
+async function downloadBookmarksFromS3 (file) {
+  await getAWSCredentials ();
+  console.log ("Will download file ", file);
+  M.disable (); console.warn ("M disabled");
+  let downloadText = await downloadStringFromS3 ( file );
   console.log ("downloaded text from S3 ", downloadText);
   let downloadObj  = JSON.parse (downloadText);
   console.log ("downloaded object from S3", downloadObj);
@@ -204,11 +226,61 @@ async function downloadBookmarksFromS3 () {
     bookmarks = bookmarks[0].children;
   console.log ("DOWNSTEP ", bookmarks);
   //installBookmarks (bookmarks);
-  for (let kid of bookmarks) {
-    if (kid.folderType == 'bookmarks-bar') {installBookmarks (kid.children)}
-  }
-  M.enable ();
+  let promises = [];
+  for (let kid of bookmarks) { if (kid.folderType == 'bookmarks-bar') { promises.push ( installBookmarks (kid.children) ); } }
+
+  await Promise.all ( promises );
+
+  setTimeout ( () => { // let thread go for a moment to allow last event to be serviced  // TODO: THE SAME still must be done in the deletion function !!!!!
+
+
+  console.warn ("all bookmarks installed");
+  M.enable (); console.warn ("M enabled");
+}, 5
+
+);
+
 }
+
+
+
+
+async function deleteAllVersions (objectKey) {
+  await getAWSCredentials ();
+  try {
+    let isTruncated = true;
+    let versionMarker = undefined;
+
+    while (isTruncated) {
+      const listCommand = new ListObjectVersionsCommand({ Bucket: AWS_BUCKETNAME, Prefix: objectKey, KeyMarker: versionMarker,});  // list all versions
+      const data = await s3Client.send(listCommand);
+      
+      for (const version of data.Versions) {  // delete each version and delete marker 
+        const deleteCommand = new DeleteObjectCommand({ Bucket: AWS_BUCKETNAME, Key: objectKey, VersionId: version.VersionId });
+        console.log(`Deleting version: ${version.VersionId}`);
+        await s3Client.send(deleteCommand);
+      }
+
+      // Also delete any delete markers
+      for (const marker of data.DeleteMarkers) {
+        const deleteMarkerCommand = new DeleteObjectCommand({ Bucket: AWS_BUCKETNAME, Key: objectKey,  VersionId: marker.VersionId,});
+        console.log(`Deleting delete marker: ${marker.VersionId}`);
+        await s3Client.send(deleteMarkerCommand);
+      }
+
+      // Check if there are more versions to process
+      isTruncated = data.IsTruncated;
+      if (isTruncated) {versionMarker = data.NextKeyMarker;}
+    }
+
+    console.log(`Successfully deleted all versions and delete markers for: ${objectKey}`);
+  } catch (error) {
+    console.error('Error deleting object versions:', error);
+  }
+}
+
+
+
 
 
 async function storeBookmarksToFilesystem () {
@@ -226,26 +298,10 @@ async function storeBookmarksToFilesystem () {
     });
 */
 
-}
-
-
-
-/*
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.action === "down") {
-//    chrome.runtime.sendMessage({ action: "syncBookmarks" });
-  }
-});
-
-*/
-
-
-async function listBookmarksFromS3 () {
-
-
-
 
 }
+
+
 
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -257,36 +313,65 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 
-async function installBookmarks (bookmarkData, pid) {  // console.log ("installing bookmarks data", bookmarkData);
+
+
+// we want to use promises, since the tree of bookmarks requires some delicate sequencing (parents must have been constructed before constructing children
+// and we need to know when everything has been completed as well)
+// manifest v3 does not yet support promises in bookmarks
+// THUS: warp it
+function createBookmark(bookmark) {
+  return new Promise((resolve, reject) => {
+    chrome.bookmarks.create(bookmark, (result) => { if (chrome.runtime.lastError) {reject(new Error(chrome.runtime.lastError));} else {resolve(result);} } );
+  });
+}
+
+
+async function installBookmarks ( bookmarkData ) {
+  let arr = await installSomeBookmarks (bookmarkData);
+  console.error ("checkertype " + typeof arr + "  " + Array.isArray(arr) + " length " + arr.length + "  " + JSON.stringify (arr));
+//  return  arr;  // needed for end synchronization using await upstairs
+
+  return Promise.resolve (true);
+}
+
+// create some bookmarks and return a promise
+// pid, if defined, is the id of the parent which muts be used here as the installed bookmarks got a fresh parent id while being installed dynamically
+async function installSomeBookmarks (bookmarkData, pid) {  // console.log ("installing bookmarks data", bookmarkData);
+  let promises = [];
   for (const bookmark of bookmarkData) {
-    if (bookmark.folderType == "other") { /* console.log ("skipping other"); */ return;}
+    if (bookmark.folderType == "other") { /* console.log ("skipping other"); */ continue; }
     if (bookmark.parentId === undefined || bookmark.parentId === "0") {bookmark.parentId = "1";} 
     if (pid !== undefined) {bookmark.parentId = pid;}
     if (bookmark.children) {
       // console.log (`installing node with ${bookmark.children.length} children \ntitle=${bookmark.title}, folderType=${bookmark.folderType}, id=${bookmark.id}, parentId=${bookmark.parentId} url=${bookmark.url}`, bookmark);
-      let created;
       try {
-        created = await chrome.bookmarks.create( {parentId: bookmark.parentId, title: bookmark.title, url: bookmark.url} ); 
+        let created = await createBookmark( {parentId: bookmark.parentId, title: bookmark.title, url: bookmark.url} );
+        let p = await installSomeBookmarks (bookmark.children, created.id);
+        // console.error ("CHECKER-ZWO " + typeof p + "  " + Array.isArray (p) + " " + JSON.stringify (p)) + " " + created.id;
+        promises.push ( p );
         // console.warn ("CREATED ", created);
       } catch (x) { console.error (x); console.error (`ERROR installing node with ${bookmark.children.length} children \ntitle=${bookmark.title}, folderType=${bookmark.folderType}, id=${bookmark.id}, parentId=${bookmark.parentId} url=${bookmark.url}`, bookmark);     }
-      installBookmarks (bookmark.children, created.id);
     }
-    else {
-      // console.log (`installing leaf node \ntitle=${bookmark.title}, folderType=${bookmark.folderType}, id=${bookmark.id}, parentId=${bookmark.parentId} url=${bookmark.url} `, bookmark);
+    else {   // console.log (`installing leaf node \ntitle=${bookmark.title}, folderType=${bookmark.folderType}, id=${bookmark.id}, parentId=${bookmark.parentId} url=${bookmark.url} `, bookmark);
       try {
-        await chrome.bookmarks.create( {parentId: bookmark.parentId, title: bookmark.title, url: bookmark.url} );
+        promises.push ( createBookmark ( {parentId: bookmark.parentId, title: bookmark.title, url: bookmark.url} ) );
       } catch (x) { console.error (x); console.error (`ERROR installing leaf node \ntitle=${bookmark.title}, folderType=${bookmark.folderType}, id=${bookmark.id}, parentId=${bookmark.parentId} url=${bookmark.url} `, bookmark); }
     }
- 
-  };
+  } // end for
 
+  // console.warn ("WILL-CHECKER " + typeof promises + "  " + Array.isArray (promises) + " " + JSON.stringify (promises));
+  return Promise.all (promises);
+} // end internal function
 // '1' is the ID of the root folder
-}
+
+
+
 
 
 
 
 async function uploadStringToS3( txt, filename ) {
+  await getAWSCredentials();
   try {
     const data = await s3Client.send( new PutObjectCommand( { Bucket: AWS_BUCKETNAME,  Key: filename, Body: txt, ContentType: 'text/plain' } ) );
     console.log('Successfully uploaded file to S3:', data);
@@ -325,24 +410,48 @@ const streamToString = (stream) => {
 };
 
 
-async function downloadFromS3 ( fileName ) {
-  let version = await getLatestVersionNumber ( "bookmarks-file" );
-  console.log ("latest version number is: ", version);
+async function downloadStringFromS3 ( fileName ) {
+  await getAWSCredentials();
+  let version = await getLatestVersionNumber ( fileName );   // console.log ("downloadStringFromS3: latest version number is: ", version);
   let data;
   try {
-    data = await s3Client.send(new GetObjectCommand( { Bucket: AWS_BUCKETNAME, Key: fileName, /* VersionId: version, */requestCacheOptions: { cache: "no-store" } } ) ); // Explicitly disable caching ));  // console.log ("data is", data);
-    const { Body } = data;  // console.log ("body is", Body);
+    data = await s3Client.send(new GetObjectCommand( { Bucket: AWS_BUCKETNAME, Key: fileName, VersionId: version, requestCacheOptions: { cache: "no-store" } } ) ); // Explicitly disable caching ));  // console.log ("data is", data);
+    const { Body } = data;  // console.log ("downloadStringFromS3: body is", Body);
     const fileContents = await streamToString(Body);
     return fileContents;
-  } catch (x) { console.error ("error while downloading"); console.error ( x );  console.error ( data);}
+  } catch (x) { console.error ("error while downloading ", fileName); console.error ( x );  console.error ( data);}
 }
 
 
 async function getLatestVersionNumber (fileName ) {
+  await getAWSCredentials();
   const listCommand  = new ListObjectVersionsCommand ( { Bucket: AWS_BUCKETNAME, Prefix: fileName } );
   const listResponse = await s3Client.send ( listCommand );
   console.log ("listing all versions: " , listResponse);
-
   const latestVersion = listResponse.Versions?.sort((a, b) => b.LastModified - a.LastModified)[0];
   return latestVersion?.VersionId;
 }
+
+
+async function listBookmarksFromS3() {
+  await getAWSCredentials();
+   console.error ("S3 client ", s3Client);
+  try {
+    let files = [];
+    let continuationToken;
+    do {
+      const data = await s3Client.send(new ListObjectsV2Command ( { Bucket: AWS_BUCKETNAME, ContinuationToken: continuationToken } ) );
+      if (data.Contents) {files = files.concat(data.Contents.map(item => item.Key));}
+      continuationToken = data.NextContinuationToken;
+    } while (continuationToken);
+
+    console.log("Files in bucket:", files);
+    return Promise.resolve (files);
+  } catch (err) {console.error("Error listing S3 files:", err); }
+}
+
+
+
+
+
+

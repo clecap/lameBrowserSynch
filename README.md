@@ -1,10 +1,11 @@
-This extension provides a simple, private and secure bookmark up-and-down-load between chrome browsers.
+This browser extension provides a simple, private and secure bookmark up-and-down-load between chrome browsers.
 
 ## Features
 
 If you click on the extension icon, the extension offers three functions:
 * Download: Downloads all bookmarks as stored in the bookmark file on the server and merges them with the current bookmarks on the browser.
-* Upload: Uploads all bookmarks from the browser to the server. 
+* Upload: Uploads all bookmarks from the browser to the server.
+* List: Lists all bookmark files present on the server. 
 * Clear Bookmarks: Clears all bookmarks from the browser.
 
 ## Server Requirements
@@ -38,13 +39,21 @@ configurations can be restored. Downloads alway pick the most recent version.
 * To have the required data ready on other machines we recommend to store the data in password managers.
 
 
-## Installation from Package and Chrome Store 
+## Generating a CRX package
+
+
+## Installation from CRX Package  
 
 Work to be done.
 
+## Installation from Chrome Store
+
+Subscribing to the principle of open source, data sovereignty and privacy, we do not distribute
+this extension in the Chrome store.
+
 ## Security
 
-* All data in the configuration is stored as part of chrome local storage. 
+* All data in the configuration is stored as part of chrome local storage.
 * No private data is used.
 * The extension claims a bit more premissions than necessary since it also is boilerplate for some other features I want to include later.
 

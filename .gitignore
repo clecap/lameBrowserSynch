@@ -1,4 +1,6 @@
 deprecated/
 node_modules/
 dist/
-.DS_Store
+build/
+**/.DS_Store
+privateKey.pem

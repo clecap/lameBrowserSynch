@@ -2,20 +2,26 @@
 <html>
 <head>
 <style>
-button {margin:5px; width: 150px;}
+button {margin:5px; width: 70px;}
+
+table {border-spacing: 0;  border-spacing: 0;  border-collapse: collapse;}
+td, th {padding: 0px; line-height:1;}
+tr {height:16px;}
+
+.fileName {max-width:160px; overflow:hidden; cursor:pointer; text-overflow: ellipsis; white-space:nowrap;}
 
 
 </style>
 <title>Bookmark</title>
 </head>
-<body style="width: 200px; height: 200px;"></body>
-  <button id="down">Download</button>
-  <button id="up">Upload</button>
-  <button id="clearBookmarks">Clear Bookmarks</button>
-<!--
-  <button id="clearCookies">Clear Cookies</button>
-  <button id="openSidepanel">Open Sidepanel</button>
--->
+
+<body style="width: 400px; height: 200px;"></body>
+
+<button id="clearBookmarks" data-action="clearBookmarks">Clear Bookmarks</button>
+
+<button data-action="new">New</button><input type="text"></input>
+<table id="listing"></table>
+
 <script src="../js/popup.js"></script>
 
 </body>
